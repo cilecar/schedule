@@ -2,19 +2,19 @@
     {
         "subject": "Интегралы и дифференциальные уравнения",
         "task": "тест",
-        "due_date": "12.12.2025",
-        "date_added": "06.03.2025",
-        "status": "Выполнено ✅",
-        "file_id": null,
-        "file_name": null
-    },
-    {
-        "subject": "Интегралы и дифференциальные уравнения",
-        "task": "123123",
-        "due_date": "12.12.2025",
+        "due_date": "12.04.2025",
         "date_added": "06.03.2025",
         "status": "Не выполнено ❌",
-        "file_id": null,
-        "file_name": null
+        "file_id": "BQACAgIAAxkBAAIOk2fJ1CcTFdXaV2vg5cAa-bSGbp83AAIuawAC9hxRSoyO86WbDGAkNgQ",
+        "file_name": "Лаба_№_1_Изучение_движения_без_нач_скор.pdf"
+    },
+    {
+        "subject": "Линейная алгебра и функция нескольких переменных",
+        "task": "тест 2",
+        "due_date": "10.03.2025",
+        "date_added": "06.03.2025",
+        "status": "Не выполнено ❌",
+        "file_id": "BQACAgIAAxkBAAIOrGfJ1aptKUSdcuOTZvhUEzMvQS0jAAJVawAC9hxRSjnai0a4-p5HNgQ",
+        "file_name": "komplexnye_chisla.docx"
     }
 ]

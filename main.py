@@ -101,8 +101,6 @@ async def start(message: types.Message):
     await message.answer("Привет! Я бот, который поможет тебе с расписанием и домашними заданиями.", reply_markup=main_keyboard)
 
 
-
-
 # Функция отображения всего расписания 
 @dp.message(F.text == "Полное расписание")
 async def full_schedule(message: types.Message):
@@ -112,8 +110,6 @@ async def full_schedule(message: types.Message):
         for day, lessons in days.items():
             response += f"{day}:\n" + "\n".join(lessons) + "\n"
     await message.answer(response)
-
-
 
 
 # Функция отображения расписания на сегодня
@@ -178,7 +174,7 @@ def add_user(user_id):
 async def send_tomorrow_schedule():
     while True:
         now = datetime.now()
-        target_time = now.replace(hour=15, minute=54, second=0, microsecond=0)
+        target_time = now.replace(hour=16, minute=15, second=0, microsecond=0)
 
         if now > target_time:
             target_time += timedelta(days=1)
@@ -262,12 +258,23 @@ async def ask_for_file(message: types.Message, state: FSMContext):
     
     await message.answer("Отправьте файл (PDF, DOCX и другие).", reply_markup=types.ReplyKeyboardRemove())
 
-@dp.message(HomeworkState.attaching_file, F.content_type.in_({"document"}))
+# Разрешенные расширения файлов
+ALLOWED_EXTENSIONS = {"pdf", "docx", "png", "jpeg", "jpg"}
+
+@dp.message(HomeworkState.attaching_file, F.document)
 async def receive_file(message: types.Message, state: FSMContext):
+    file_name = message.document.file_name
+    file_extension = file_name.split(".")[-1].lower()
+
+    if file_extension not in ALLOWED_EXTENSIONS:
+        await message.answer("⚠ Этот формат файла не поддерживается. Разрешены только PDF, DOCX, PNG, JPEG, JPG.")
+        return
+
     file_id = message.document.file_id
-    await state.update_data(file_id=file_id, file_name=message.document.file_name)
+    await state.update_data(file_id=file_id, file_name=file_name)
     await state.set_state(HomeworkState.entering_due_date)
-    await message.answer("Введите срок выполнения (например, 10.03.2025):")
+    await message.answer("Введите срок выполнения (в формате ДД.ММ.ГГГГ):")
+
 
 @dp.message(HomeworkState.attaching_file, F.text == "➡ Пропустить")
 async def skip_file(message: types.Message, state: FSMContext):
@@ -325,12 +332,20 @@ async def show_homework(message: types.Message):
         await message.answer("Домашних заданий нет.")
     else:
         for task in homework:
-            response = f"[{task['status']}] {task['subject']} - {task['task']}, сделать до {task['due_date']} (Добавлено: {task['date_added']})"
+            response = (
+                f"Статус: {task['status']}\n"
+                f"Предмет: {task['subject']}\n"
+                f"Задание: {task['task']}\n"
+                f"Сделать: до {task['due_date']}\n"
+                f"Дата добавления: {task['date_added']}"
+            )
+            
             if task.get("file_id"):
-                response += f"\n📎 Прикрепленный файл: {task['file_name']}"
+                response += f"\nПрикрепленный файл: {task['file_name']}"
                 await message.answer_document(task["file_id"], caption=response)
             else:
                 await message.answer(response)
+
 
 
 # Клавиатура для отмены
@@ -469,7 +484,7 @@ async def send_deadline_reminders():
             if due_date - timedelta(days=1) <= now < due_date and task["status"] == "Не выполнено ❌":
                 await bot.send_message(
                     chat_id="706172589",
-                    text=f"❗Напоминание: Завтра дедлайн по предмету {task['subject']}!❗\nЗадание: {task['task']}"
+                    text=f"❗Напоминание: Завтра дедлайн по заданию {task['subject']}!❗\n: {task['task']}"
                 )
         await asyncio.sleep(3600)
 
