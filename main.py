@@ -96,7 +96,10 @@ def save_homework(user_id, homework_data):
 
 @dp.message(Command("start"))
 async def start(message: types.Message):
+    user_id = message.from_user.id  # Получаем ID пользователя
+    add_user(user_id)  # Добавляем пользователя в список
     await message.answer("Привет! Я бот, который поможет тебе с расписанием и домашними заданиями.", reply_markup=main_keyboard)
+
 
 
 
@@ -157,11 +160,51 @@ async def tomorrow_schedule(message: types.Message):
 
 
 
+# Функция для добавления нового пользователя в список
+def add_user(user_id):
+    if os.path.exists("users.json"):
+        with open("users.json", "r", encoding="utf-8") as f:
+            users = json.load(f)
+    else:
+        users = []
+    
+    if user_id not in users:
+        users.append(user_id)
+        with open("users.json", "w", encoding="utf-8") as f:
+            json.dump(users, f, ensure_ascii=False, indent=4)
+
+
+# Клавиатура для отмены рассылки
+cancel_schedule_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+    [InlineKeyboardButton(text="🚫 Отменить напоминание", callback_data="cancel_schedule")]
+])
+
+@dp.callback_query(F.data.startswith("cancel_schedule_"))
+async def cancel_schedule(callback_query: types.CallbackQuery):
+    user_id = callback_query.from_user.id
+    # Если кнопка была нажата пользователем, сохраняем информацию о том, что пользователь отменил рассылку
+    if os.path.exists("users.json"):
+        with open("users.json", "r", encoding="utf-8") as f:
+            users = json.load(f)
+
+    if user_id in users:
+        # Можно добавить логику для сохранения информации о том, что пользователь отменил рассылку
+        users.remove(user_id)
+        with open("users.json", "w", encoding="utf-8") as f:
+            json.dump(users, f, ensure_ascii=False, indent=4)
+        
+        await bot.answer_callback_query(callback_query.id, text="Вы отменили рассылку.")
+        await bot.send_message(user_id, "Вы больше не будете получать напоминания о завтрашних парах.")
+    else:
+        await bot.answer_callback_query(callback_query.id, text="Вы уже отменили рассылку.")
+
+
+
 # Функция напоминания о завтрашних парах
 async def send_tomorrow_schedule():
     while True:
         now = datetime.now()
-        target_time = now.replace(hour=18, minute=0, second=0, microsecond=0)
+        target_time = now.replace(hour=14, minute=58, second=20, microsecond=0)
 
         if now > target_time:
             target_time += timedelta(days=1)
@@ -176,16 +219,30 @@ async def send_tomorrow_schedule():
         current_week = "1" if weeks_passed % 2 == 0 else "2"
 
         tomorrow_day = (datetime.today() + timedelta(days=1)).strftime("%A")
-        days_map = {
-            "Monday": "Понедельник", "Tuesday": "Вторник", "Wednesday": "Среда", 
+        days_map = { 
             "Thursday": "Четверг", "Friday": "Пятница", "Saturday": "Суббота", "Sunday": "Воскресенье"
         }
 
         tomorrow_name = days_map.get(tomorrow_day, tomorrow_day)
-        
+
         response = schedule.get(current_week, {}).get(tomorrow_name, ["На завтра пар нет."])
 
-        await bot.send_message(706172589, f"📅 Завтра у тебя:\n" + "\n".join(response))
+        # Чтение всех пользователей из файла
+        if os.path.exists("users.json"):
+            with open("users.json", "r", encoding="utf-8") as f:
+                users = json.load(f)
+            
+            for user_id in users:
+                try:
+                    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                        [InlineKeyboardButton(text="🚫 Отменить рассылку", callback_data=f"cancel_schedule_{user_id}")]
+                    ])
+                    await bot.send_message(user_id, f"📅 Завтра у тебя:\n" + "\n".join(response), reply_markup=keyboard)
+                except Exception as e:
+                    logging.error(f"Не удалось отправить сообщение пользователю {user_id}: {e}")
+
+
+
 
 
 #----------------------------------------------------------------------------------------------------------#
@@ -363,7 +420,7 @@ async def choose_subject_for_status_change(message: types.Message, state: FSMCon
 
     # Создаем кнопки с текстом задания
     task_buttons = [[KeyboardButton(text=task["task"])] for task in subject_tasks]
-    task_buttons.append([KeyboardButton(text="🚫 Отмена")])
+   
 
     keyboard = ReplyKeyboardMarkup(keyboard=task_buttons, resize_keyboard=True)
 
@@ -392,54 +449,55 @@ async def change_homework_status(message: types.Message, state: FSMContext):
         [InlineKeyboardButton(text="🚫 Отмена", callback_data="cancel")]
     ])
     
-    await message.answer(f"Выберите новый статус для задания:\n<b>{selected_task['task']}</b>", reply_markup=keyboard, parse_mode="HTML")
+    await message.answer(f"Выберите новый статус для задания:\n <b>{selected_task['task']}</b>", reply_markup=keyboard, parse_mode="HTML")
 
 @dp.callback_query(lambda c: c.data in ["status_done", "status_not_done", "status_delete", "cancel"])
 async def process_status_change(callback_query: types.CallbackQuery, state: FSMContext):
     user_id = callback_query.from_user.id  # Получаем ID пользователя
     data = await state.get_data()
-    selected_task = data.get("selected_task")  # Получаем выбранную задачу
 
+    # Если нажали на кнопку "Отмена"
     if callback_query.data == "cancel":
-        await state.clear()
+        # Очистим все данные связанные с заданием
+        await state.update_data(selected_task=None)
         await callback_query.message.answer("Действие отменено.", reply_markup=main_keyboard)
         await callback_query.answer()
         return
-    
+
+    selected_task = data.get("selected_task")  # Получаем выбранную задачу
+
     if not selected_task:
         await callback_query.message.answer("Ошибка: задание не найдено.", reply_markup=main_keyboard)
         await callback_query.answer()
         return
 
-    # Обновляем статус задачи
     if callback_query.data == "status_done":
         selected_task["status"] = "Выполнено ✅"
     elif callback_query.data == "status_not_done":
         selected_task["status"] = "Не выполнено ❌"
     elif callback_query.data == "status_delete":
-        # Удаляем задание
         homework = load_homework(user_id)
-        homework = [task for task in homework if task != selected_task]  # Удаляем задачу
+        homework.remove(selected_task)
         save_homework(user_id, homework)
-        await callback_query.message.answer('Задача удалена.', reply_markup=main_keyboard)
-        await state.clear()
+        await callback_query.message.answer("Задание удалено.", reply_markup=main_keyboard)
+        await callback_query.answer()
         return
 
-    # Обновляем список заданий с новым статусом
+    # Сохраняем изменения
     homework = load_homework(user_id)
-
-    # Ищем нужную задачу и обновляем ее статус
-    for task in homework:
-        if task["task"] == selected_task["task"]:  # Сравниваем по имени задания
-            task["status"] = selected_task["status"]  # Обновляем статус
-            break  # Останавливаемся на первой найденной задаче
-
-    # Сохраняем обновленные задания
+    for idx, task in enumerate(homework):
+        if task == selected_task:
+            homework[idx] = selected_task
+            break
     save_homework(user_id, homework)
 
-    await state.clear()
-    await callback_query.message.answer(f'Установлен статус: {selected_task["status"]}', reply_markup=main_keyboard)
+    await callback_query.message.answer(f"Статус задания {selected_task['task']} изменен на: {selected_task['status']}.", reply_markup=main_keyboard)
     await callback_query.answer()
+
+
+
+
+
 
 
 
