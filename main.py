@@ -263,26 +263,36 @@ async def enter_due_date(message: types.Message, state: FSMContext):
         return
     
     data = await state.get_data()
+    user_id = message.from_user.id  # Получаем ID пользователя
+
+    # Загружаем домашние задания для конкретного пользователя
+    homework = load_homework(user_id)
+
     homework.append({
         "subject": data["subject"],
         "task": data["task"],
         "due_date": message.text,
         "date_added": datetime.now().strftime("%d.%m.%Y"),
         "status": "Не выполнено ❌",
-        "file_id": data.get("file_id"),  # Добавляем file_id, если он есть
-        "file_name": data.get("file_name")  # Добавляем file_name, если он есть
+        "file_id": data.get("file_id"),
+        "file_name": data.get("file_name")
     })
 
-    
-    save_homework()
+    save_homework(user_id, homework)  # Сохраняем домашку для конкретного пользователя
+
     await state.clear()
     await message.answer("Задание добавлено!", reply_markup=main_keyboard)
+
 
 
 
 # Функция просмотра записей домашних заданий
 @dp.message(F.text == "Посмотреть домашние задания")
 async def show_homework(message: types.Message):
+    user_id = message.from_user.id  # Получаем ID пользователя
+
+    homework = load_homework(user_id)  # Загружаем домашку для пользователя
+
     if not homework:
         await message.answer("Домашних заданий нет.")
     else:
@@ -293,6 +303,7 @@ async def show_homework(message: types.Message):
                 await message.answer_document(task["file_id"], caption=response)
             else:
                 await message.answer(response)
+
 
 
 # Клавиатура для отмены
@@ -453,6 +464,25 @@ async def send_deadline_reminders():
                     text=f"❗Напоминание: Завтра дедлайн по предмету {task['subject']}!❗\nЗадание: {task['task']}"
                 )
         await asyncio.sleep(3600)
+
+
+USER_HOMEWORK_DIR = "homework_data/"
+
+# Функция загрузки домашнего задания для конкретного пользователя
+def load_homework(user_id):
+    user_homework_file = f"{USER_HOMEWORK_DIR}{user_id}_homework.json"
+    if os.path.exists(user_homework_file):
+        with open(user_homework_file, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return []
+
+# Функция сохранения домашнего задания для конкретного пользователя
+def save_homework(user_id, homework_data):
+    user_homework_file = f"{USER_HOMEWORK_DIR}{user_id}_homework.json"
+    os.makedirs(USER_HOMEWORK_DIR, exist_ok=True)
+    with open(user_homework_file, "w", encoding="utf-8") as f:
+        json.dump(homework_data, f, ensure_ascii=False, indent=4)
+
 
 async def main():
     logging.basicConfig(level=logging.INFO)
