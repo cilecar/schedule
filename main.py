@@ -31,10 +31,12 @@ main_keyboard = ReplyKeyboardMarkup(
         [KeyboardButton(text="Полное расписание")],
         [KeyboardButton(text="Добавить домашнее задание")],
         [KeyboardButton(text="Посмотреть домашние задания")],
-        [KeyboardButton(text="Изменить статус задания")]
+        [KeyboardButton(text="Изменить статус задания")],
+        [KeyboardButton(text="Управление оповещениями о завтрашних парах")]  # Новая кнопка
     ],
     resize_keyboard=True
 )
+
 
 schedule = { 
     "1": 
@@ -70,6 +72,43 @@ schedule = {
 
 schedule_subjects = ["Интегралы и дифференциальные уравнения", "Линейная алгебра и функция нескольких переменных", "История информационного противоборства", "Право", "Основы информационной безопасности", "Иностранный язык", "Социальные и этические вопросы в информационной сфере", "История России", "Физика", "Основы программирования", "Дискретная математика"]
 homework = []
+
+# Функция для загрузки настроек пользователя
+def load_user_settings(user_id):
+    if os.path.exists("users_settings.json"):
+        with open("users_settings.json", "r", encoding="utf-8") as f:
+            settings = json.load(f)
+            return settings.get(str(user_id), {"notifications_enabled": True})
+    return {"notifications_enabled": True}  # По умолчанию уведомления включены
+
+# Функция для сохранения настроек пользователя
+def save_user_settings(user_id, settings_data):
+    if os.path.exists("users_settings.json"):
+        with open("users_settings.json", "r", encoding="utf-8") as f:
+            settings = json.load(f)
+    else:
+        settings = {}
+
+    settings[str(user_id)] = settings_data
+
+    with open("users_settings.json", "w", encoding="utf-8") as f:
+        json.dump(settings, f, ensure_ascii=False, indent=4)
+
+
+@dp.message(F.text == "Управление оповещениями о завтрашних парах")
+async def toggle_notifications(message: types.Message):
+    user_id = message.from_user.id  # Получаем ID пользователя
+    settings = load_user_settings(user_id)  # Загружаем настройки пользователя
+
+    # Меняем настройку оповещений
+    settings["notifications_enabled"] = not settings["notifications_enabled"]
+    
+    # Сохраняем обновленные настройки
+    save_user_settings(user_id, settings)
+
+    status = "включены" if settings["notifications_enabled"] else "выключены"
+    await message.answer(f"Оповещения о завтрашних парах {status}.")
+
 
 # Функция загрузки домашнего задания из файла для конкретного пользователя
 def load_homework(user_id):
@@ -174,7 +213,7 @@ def add_user(user_id):
 async def send_tomorrow_schedule():
     while True:
         now = datetime.now()
-        target_time = now.replace(hour=16, minute=15, second=0, microsecond=0)
+        target_time = now.replace(hour=22, minute=40, second=0, microsecond=0)
 
         if now > target_time:
             target_time += timedelta(days=1)
@@ -204,9 +243,12 @@ async def send_tomorrow_schedule():
             
             for user_id in users:
                 try:
-                    await bot.send_message(user_id, f"📅 Завтра у тебя:\n" + "\n".join(response))
+                    user_settings = load_user_settings(user_id)
+                    if user_settings["notifications_enabled"]:
+                        await bot.send_message(user_id, f"📅 Завтра у тебя:\n" + "\n".join(response))
                 except Exception as e:
                     logging.error(f"Не удалось отправить сообщение пользователю {user_id}: {e}")
+
 
 #----------------------------------------------------------------------------------------------------------#
 
