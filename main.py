@@ -71,18 +71,26 @@ schedule = {
 schedule_subjects = ["Интегралы и дифференциальные уравнения", "Линейная алгебра и функция нескольких переменных", "История информационного противоборства", "Право", "Основы информационной безопасности", "Иностранный язык", "Социальные и этические вопросы в информационной сфере", "История России", "Физика", "Основы программирования", "Дискретная математика"]
 homework = []
 
-# Функция загрузки домашнего задания из файла
-def load_homework():
+# Функция загрузки домашнего задания из файла для конкретного пользователя
+def load_homework(user_id):
     if os.path.exists(HOMEWORK_FILE):
         with open(HOMEWORK_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
+            all_homework = json.load(f)
+            return all_homework.get(str(user_id), [])
     return []
 
-def save_homework():
-    with open(HOMEWORK_FILE, "w", encoding="utf-8") as f:
-        json.dump(homework, f, ensure_ascii=False, indent=4)
+# Функция сохранения домашнего задания для конкретного пользователя
+def save_homework(user_id, homework_data):
+    if os.path.exists(HOMEWORK_FILE):
+        with open(HOMEWORK_FILE, "r", encoding="utf-8") as f:
+            all_homework = json.load(f)
+    else:
+        all_homework = {}
 
-homework = load_homework()
+    all_homework[str(user_id)] = homework_data
+
+    with open(HOMEWORK_FILE, "w", encoding="utf-8") as f:
+        json.dump(all_homework, f, ensure_ascii=False, indent=4)
 
 
 
@@ -311,15 +319,18 @@ cancel_keyboard = InlineKeyboardMarkup(inline_keyboard=[
     [InlineKeyboardButton(text="🚫 Отмена", callback_data="cancel")]
 ])
 
-# Функция смены статуса записи домашнего задания 
+# Функция смены статуса записи домашнего задания
 @dp.message(F.text == "Изменить статус задания")
 async def change_homework_prompt(message: types.Message, state: FSMContext):
+    user_id = message.from_user.id  # Получаем ID пользователя
+    homework = load_homework(user_id)  # Загружаем домашку для пользователя
+
     if not homework:
         await message.answer("Домашних заданий нет.")
         return
     
     keyboard = ReplyKeyboardMarkup(
-        keyboard=[[KeyboardButton(text=subj)] for subj in schedule_subjects] + [[KeyboardButton(text="🚫 Отмена")]],
+        keyboard=[[KeyboardButton(text=subj)] for subj in schedule_subjects] + [[KeyboardButton(text="🚫 Отмена")]], 
         resize_keyboard=True
     )
 
@@ -328,6 +339,9 @@ async def change_homework_prompt(message: types.Message, state: FSMContext):
 
 @dp.message(HomeworkState.changing_subject)
 async def choose_subject_for_status_change(message: types.Message, state: FSMContext):
+    user_id = message.from_user.id  # Получаем ID пользователя
+    homework = load_homework(user_id)  # Загружаем домашку для пользователя
+
     if message.text == "🚫 Отмена":
         await state.clear()
         await message.answer("Действие отменено.", reply_markup=main_keyboard)
@@ -356,16 +370,11 @@ async def choose_subject_for_status_change(message: types.Message, state: FSMCon
     await state.set_state(HomeworkState.changing)
     await message.answer("Выберите задание:", reply_markup=keyboard)
 
-
 @dp.message(HomeworkState.changing)
 async def change_homework_status(message: types.Message, state: FSMContext):
-    if message.text == "🚫 Отмена":
-        await state.clear()
-        await message.answer("Действие отменено.", reply_markup=main_keyboard)
-        return
-
+    user_id = message.from_user.id  # Получаем ID пользователя
     data = await state.get_data()
-    subject_tasks = data.get("subject_tasks", [])  
+    subject_tasks = data.get("subject_tasks", [])
 
     selected_task = next((task for task in subject_tasks if task["task"] == message.text), None)
 
@@ -373,8 +382,8 @@ async def change_homework_status(message: types.Message, state: FSMContext):
         await message.answer("Ошибка: задание не найдено. Выберите из списка.")
         return
 
-    task_index_in_homework = homework.index(selected_task)  # Определяем индекс в общем списке
-    await state.update_data(task_index=task_index_in_homework)
+    # Сохраняем индекс выбранной задачи в состоянии
+    await state.update_data(selected_task=selected_task)
 
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✅ Выполнено", callback_data="status_done")],
@@ -383,75 +392,62 @@ async def change_homework_status(message: types.Message, state: FSMContext):
         [InlineKeyboardButton(text="🚫 Отмена", callback_data="cancel")]
     ])
     
-    # Теперь в тексте будет указано название задачи
     await message.answer(f"Выберите новый статус для задания:\n<b>{selected_task['task']}</b>", reply_markup=keyboard, parse_mode="HTML")
-
-
 
 @dp.callback_query(lambda c: c.data in ["status_done", "status_not_done", "status_delete", "cancel"])
 async def process_status_change(callback_query: types.CallbackQuery, state: FSMContext):
+    user_id = callback_query.from_user.id  # Получаем ID пользователя
     data = await state.get_data()
-    task_index = data.get("task_index")
+    selected_task = data.get("selected_task")  # Получаем выбранную задачу
+
     if callback_query.data == "cancel":
         await state.clear()
         await callback_query.message.answer("Действие отменено.", reply_markup=main_keyboard)
         await callback_query.answer()
         return
-    if task_index is None or not (0 <= task_index < len(homework)):
+    
+    if not selected_task:
         await callback_query.message.answer("Ошибка: задание не найдено.", reply_markup=main_keyboard)
         await callback_query.answer()
         return
-    
+
+    # Обновляем статус задачи
     if callback_query.data == "status_done":
-        homework[task_index]["status"] = "Выполнено ✅"
+        selected_task["status"] = "Выполнено ✅"
     elif callback_query.data == "status_not_done":
-        homework[task_index]["status"] = "Не выполнено ❌"
+        selected_task["status"] = "Не выполнено ❌"
     elif callback_query.data == "status_delete":
-        del homework[task_index]  # Удаление элемента
-        save_homework()  # Сохраняем изменения в файл
-        await callback_query.message.answer(
-        f'Задача удалена.',
-        reply_markup=main_keyboard
-    )
+        # Удаляем задание
+        homework = load_homework(user_id)
+        homework = [task for task in homework if task != selected_task]  # Удаляем задачу
+        save_homework(user_id, homework)
+        await callback_query.message.answer('Задача удалена.', reply_markup=main_keyboard)
         await state.clear()
         return
-    save_homework()
+
+    # Обновляем список заданий с новым статусом
+    homework = load_homework(user_id)
+
+    # Ищем нужную задачу и обновляем ее статус
+    for task in homework:
+        if task["task"] == selected_task["task"]:  # Сравниваем по имени задания
+            task["status"] = selected_task["status"]  # Обновляем статус
+            break  # Останавливаемся на первой найденной задаче
+
+    # Сохраняем обновленные задания
+    save_homework(user_id, homework)
+
     await state.clear()
-    await callback_query.message.answer(
-        f'Установлен статус: "{homework[task_index]["status"]}" для задачи: "{homework[task_index]["task"]}" по предмету: "{homework[task_index]["subject"]}"',
-        reply_markup=main_keyboard
-    )
+    await callback_query.message.answer(f'Установлен статус: {selected_task["status"]}', reply_markup=main_keyboard)
     await callback_query.answer()
 
 
 
-@dp.message(HomeworkState.entering_task)
-async def update_task_status(message: types.Message, state: FSMContext):
-    if message.text == "🚫 Отмена":
-        await state.clear()
-        await message.answer("Действие отменено.", reply_markup=main_keyboard)
-        return
-    
-    statuses = {"✅ Выполнено": "Выполнено", "❌ Не выполнено": "Не выполнено", "🗑 Удалить": "Удалено"}
-    if message.text not in statuses:
-        await message.answer("Выберите статус из списка.")
-        return
-    
-    data = await state.get_data()
-    index = data.get("task_index")
-    tasks = data.get("tasks", [])
-    
-    if index is not None and 0 <= index < len(tasks):
-        if statuses[message.text] == "Удалено":
-            homework.remove(tasks[index])
-        else:
-            tasks[index]["status"] = statuses[message.text]
-        
-        save_homework()
-        await state.clear()
-        await message.answer("Изменения сохранены!", reply_markup=main_keyboard)
-    else:
-        await message.answer("Ошибка: задание не найдено.")
+
+
+
+
+
 
 async def send_deadline_reminders():
     while True:
