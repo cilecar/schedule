@@ -27,6 +27,7 @@ class HomeworkState(StatesGroup):
     entering_task = State()
     entering_due_date = State()
     changing = State()
+    changing_time = State()
 
 main_keyboard = ReplyKeyboardMarkup(
     keyboard=[
@@ -195,8 +196,7 @@ async def tomorrow_schedule(message: types.Message):
     tomorrow_name = days[tomorrow]
 
     response = schedule.get(current_week, {}).get(tomorrow_name, ["На завтра пар нет."])
-
-    await message.answer("\n".join(response))
+    await message.answer(f"Сейчас {current_week}-я неделя.\n\n" + "\n".join(response))
 
 
 
@@ -216,29 +216,25 @@ def add_user(user_id):
 # Функция изменения времени оповещения
 @dp.message(F.text == "Изменить время оповещения")
 async def change_notification_time(message: types.Message, state: FSMContext):
-    await message.answer("Введите новое время оповещения в формате ЧЧ:ММ (например, 22:45):")
-    await state.set_state(HomeworkState.changing)  # Переходим в состояние изменения времени
+    await message.answer("Введите новое время оповещения в формате ЧЧ:ММ:")
+    await state.set_state(HomeworkState.changing_time)  # Используем новое состояние
+
 
 # Обработка нового времени
-@dp.message(HomeworkState.changing)
+@dp.message(HomeworkState.changing_time)
 async def process_new_time(message: types.Message, state: FSMContext):
     new_time = message.text.strip()
-
     try:
-        # Проверяем правильность формата времени
         datetime.strptime(new_time, "%H:%M")
-        
         user_id = message.from_user.id
         settings = load_user_settings(user_id)
-        
-        # Сохраняем новое время в настройках
         settings["notification_time"] = new_time
         save_user_settings(user_id, settings)
-        
         await message.answer(f"Время оповещения изменено на {new_time}.")
-        await state.set_state(None)  # Завершаем процесс изменения времени
+        await state.clear()  # Очищаем состояние
     except ValueError:
         await message.answer("Неверный формат времени. Пожалуйста, введите время в формате ЧЧ:ММ.")
+
 
 
 
