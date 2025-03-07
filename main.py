@@ -15,6 +15,9 @@ HOMEWORK_FILE = "homework.json"
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
+logging.basicConfig(level=logging.INFO)  # Устанавливаем уровень логирования на INFO
+logger = logging.getLogger(__name__)
+
 class HomeworkState(StatesGroup):
     adding = State()
     changing = State()
@@ -23,6 +26,7 @@ class HomeworkState(StatesGroup):
     attaching_file = State()
     entering_task = State()
     entering_due_date = State()
+    changing = State()
 
 main_keyboard = ReplyKeyboardMarkup(
     keyboard=[
@@ -32,10 +36,12 @@ main_keyboard = ReplyKeyboardMarkup(
         [KeyboardButton(text="Добавить домашнее задание")],
         [KeyboardButton(text="Посмотреть домашние задания")],
         [KeyboardButton(text="Изменить статус задания")],
-        [KeyboardButton(text="Управление оповещениями о завтрашних парах")]  # Новая кнопка
+        [KeyboardButton(text="Управление оповещениями о завтрашних парах")],  # Новая кнопка
+        [KeyboardButton(text="Изменить время оповещения")]  # Кнопка для изменения времени
     ],
     resize_keyboard=True
 )
+
 
 
 schedule = { 
@@ -78,8 +84,9 @@ def load_user_settings(user_id):
     if os.path.exists("users_settings.json"):
         with open("users_settings.json", "r", encoding="utf-8") as f:
             settings = json.load(f)
-            return settings.get(str(user_id), {"notifications_enabled": True})
-    return {"notifications_enabled": True}  # По умолчанию уведомления включены
+            return settings.get(str(user_id), {"notifications_enabled": True, "notification_time": "22:45"})
+    return {"notifications_enabled": True, "notification_time": "22:45"}  # По умолчанию уведомления включены и время 22:45
+
 
 # Функция для сохранения настроек пользователя
 def save_user_settings(user_id, settings_data):
@@ -97,13 +104,11 @@ def save_user_settings(user_id, settings_data):
 
 @dp.message(F.text == "Управление оповещениями о завтрашних парах")
 async def toggle_notifications(message: types.Message):
-    user_id = message.from_user.id  # Получаем ID пользователя
-    settings = load_user_settings(user_id)  # Загружаем настройки пользователя
+    user_id = message.from_user.id
+    settings = load_user_settings(user_id)
 
-    # Меняем настройку оповещений
     settings["notifications_enabled"] = not settings["notifications_enabled"]
     
-    # Сохраняем обновленные настройки
     save_user_settings(user_id, settings)
 
     status = "включены" if settings["notifications_enabled"] else "выключены"
@@ -208,46 +213,109 @@ def add_user(user_id):
         with open("users.json", "w", encoding="utf-8") as f:
             json.dump(users, f, ensure_ascii=False, indent=4)
 
+# Функция изменения времени оповещения
+@dp.message(F.text == "Изменить время оповещения")
+async def change_notification_time(message: types.Message, state: FSMContext):
+    await message.answer("Введите новое время оповещения в формате ЧЧ:ММ (например, 22:45):")
+    await state.set_state(HomeworkState.changing)  # Переходим в состояние изменения времени
+
+# Обработка нового времени
+@dp.message(HomeworkState.changing)
+async def process_new_time(message: types.Message, state: FSMContext):
+    new_time = message.text.strip()
+
+    try:
+        # Проверяем правильность формата времени
+        datetime.strptime(new_time, "%H:%M")
+        
+        user_id = message.from_user.id
+        settings = load_user_settings(user_id)
+        
+        # Сохраняем новое время в настройках
+        settings["notification_time"] = new_time
+        save_user_settings(user_id, settings)
+        
+        await message.answer(f"Время оповещения изменено на {new_time}.")
+        await state.set_state(None)  # Завершаем процесс изменения времени
+    except ValueError:
+        await message.answer("Неверный формат времени. Пожалуйста, введите время в формате ЧЧ:ММ.")
+
+
 
 # Функция напоминания о завтрашних парах
+sent_notifications = set()  # Храним пользователей, которым уже отправили сообщение
+
 async def send_tomorrow_schedule():
+    global sent_notifications
+    
     while True:
         now = datetime.now()
-        target_time = now.replace(hour=22, minute=40, second=0, microsecond=0)
 
-        if now > target_time:
-            target_time += timedelta(days=1)
+        if os.path.exists("users_settings.json"):
+            with open("users_settings.json", "r", encoding="utf-8") as f:
+                settings = json.load(f)
 
-        wait_time = (target_time - now).total_seconds()
-        await asyncio.sleep(wait_time)
+            for user_id, user_settings in settings.items():
+                if user_settings.get("notifications_enabled", True):
+                    notification_time = user_settings.get("notification_time", "22:45")
+                    hour, minute = map(int, notification_time.split(":"))
 
-        SEMESTER_START = datetime(2024, 9, 2)
+                    if now.hour == hour and now.minute == minute:
+                        # Проверяем, не отправляли ли уже сегодня уведомление этому пользователю
+                        if user_id in sent_notifications:
+                            continue  # Если уже отправлено, пропускаем
 
-        weeks_passed = (now - SEMESTER_START).days // 7
+                        SEMESTER_START = datetime(2024, 9, 2)
+                        weeks_passed = (now - SEMESTER_START).days // 7
+                        current_week = "1" if weeks_passed % 2 == 0 else "2"
 
-        current_week = "1" if weeks_passed % 2 == 0 else "2"
+                        tomorrow_day = (datetime.today() + timedelta(days=1)).strftime("%A")
+                        days_map = {
+                            "Thursday": "Четверг", "Friday": "Пятница", "Saturday": "Суббота", "Sunday": "Воскресенье"
+                        }
 
-        tomorrow_day = (datetime.today() + timedelta(days=1)).strftime("%A")
-        days_map = { 
-            "Thursday": "Четверг", "Friday": "Пятница", "Saturday": "Суббота", "Sunday": "Воскресенье"
-        }
+                        tomorrow_name = days_map.get(tomorrow_day, tomorrow_day)
+                        response = schedule.get(current_week, {}).get(tomorrow_name, ["На завтра пар нет."])
 
-        tomorrow_name = days_map.get(tomorrow_day, tomorrow_day)
+                        try:
+                            await bot.send_message(user_id, f"📅 Завтра у тебя:\n" + "\n".join(response))
+                            sent_notifications.add(user_id)  # Запоминаем, что отправили
+                        except Exception as e:
+                            logging.error(f"Не удалось отправить сообщение пользователю {user_id}: {e}")
 
-        response = schedule.get(current_week, {}).get(tomorrow_name, ["На завтра пар нет."])
+        # Если уже наступил новый день – сбрасываем список отправленных уведомлений
+        if now.hour == 0 and now.minute == 0:
+            sent_notifications.clear()
 
-        # Чтение всех пользователей из файла
-        if os.path.exists("users.json"):
-            with open("users.json", "r", encoding="utf-8") as f:
-                users = json.load(f)
-            
-            for user_id in users:
-                try:
-                    user_settings = load_user_settings(user_id)
-                    if user_settings["notifications_enabled"]:
-                        await bot.send_message(user_id, f"📅 Завтра у тебя:\n" + "\n".join(response))
-                except Exception as e:
-                    logging.error(f"Не удалось отправить сообщение пользователю {user_id}: {e}")
+        await asyncio.sleep(1)  # Проверяем каждую минуту
+
+
+
+
+
+# Функция для проверки изменений в настройках
+async def check_for_changes():
+    previous_settings = None
+
+    while True:
+        current_settings = load_user_settings()
+
+        if current_settings != previous_settings:
+            logger.info("Изменения в настройках найдены!")
+            previous_settings = current_settings
+        else:
+            logger.info("Изменений не найдено.")
+
+        await asyncio.sleep(10)
+
+# Запуск фоновой задачи для проверки изменений
+async def main():
+    asyncio.create_task(check_for_changes())
+    asyncio.create_task(send_tomorrow_schedule())  # Запускаем задачу для отправки оповещений
+
+
+
+
 
 
 #----------------------------------------------------------------------------------------------------------#

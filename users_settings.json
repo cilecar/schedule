@@ -1,5 +1,10 @@
 {
     "706172589": {
-        "notifications_enabled": false
+        "notifications_enabled": true,
+        "notification_time": "18:00"
+    },
+    "5882482753": {
+        "notifications_enabled": true,
+        "notification_time": "00:51"
     }
 }
