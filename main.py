@@ -22,6 +22,7 @@ class HomeworkState(StatesGroup):
     adding = State()
     changing = State()
     choosing_subject = State()
+    choosing_subject_for_adding = State()  # New state for adding homework
     changing_subject = State()
     attaching_files = State()
     entering_task = State()
@@ -390,9 +391,9 @@ async def today_schedule(message: types.Message):
 async def tomorrow_schedule(message: types.Message):
     now = datetime.now()
 
-    SEMЕSTER_START = datetime(2024, 9, 2)  # 2 сентября 2024
+    SEMESTER_START = datetime(2024, 9, 2)  # 2 сентября 2024
 
-    weeks_passed = (now - SEMЕSTER_START).days // 7
+    weeks_passed = (now - SEMESTER_START).days // 7
 
     current_week = "1" if weeks_passed % 2 == 0 else "2"
 
@@ -447,7 +448,7 @@ sent_notifications = set()  # Храним пользователей, кото�
 
 async def send_tomorrow_schedule():
     global sent_notifications
-    
+
     while True:
         now = datetime.now()
 
@@ -462,7 +463,6 @@ async def send_tomorrow_schedule():
 
                     if now.hour == hour and now.minute == minute:
 
-                        # Проверяем, не отправляли ли уже сегодня уведомление этому пользователю
                         if user_id in sent_notifications:
                             continue  # Если уже отправлено, пропускаем
 
@@ -476,20 +476,20 @@ async def send_tomorrow_schedule():
                         }
 
                         tomorrow_name = days_map.get(tomorrow_day, tomorrow_day)
-                        response = schedule.get(current_week, {}).get(tomorrow_name, ["На завтра пар нет."])
+                        response = schedule.get(current_week, {}).get(tomorrow_name, [])
 
-                        try:
-                            await bot.send_message(user_id, f"📅 Завтра у тебя:\n" + "\n".join(response))
-                            sent_notifications.add(user_id)  # Запоминаем, что отправили
-                        except Exception as e:
-                            logging.error(f"Не удалось отправить сообщение пользователю {user_id}: {e}")
+                        if response:  # Отправляем сообщение только если есть пары
+                            try:
+                                await bot.send_message(user_id, f"📅 Завтра у тебя:\n" + "\n".join(response))
+                                sent_notifications.add(user_id)  # Запоминаем, что отправили
+                            except Exception as e:
+                                logging.error(f"Не удалось отправить сообщение пользователю {user_id}: {e}")
 
-
-        # Если уже наступил новый день – сбрасываем список отправленных уведомлений
         if now.hour == 0 and now.minute == 0:
             sent_notifications.clear()
 
         await asyncio.sleep(1)  # Проверяем каждую минуту
+
 
 
 # Функция для проверки изменений в настройках
@@ -524,11 +524,10 @@ async def add_homework_start(message: types.Message, state: FSMContext):
         keyboard=[[KeyboardButton(text=subj)] for subj in schedule_subjects] + [[KeyboardButton(text="🚫 Отмена")]], 
         resize_keyboard=True
     )
-    await state.set_state(HomeworkState.choosing_subject)
+    await state.set_state(HomeworkState.choosing_subject_for_adding)  # Use new state for adding homework
     await message.answer("Выберите предмет:", reply_markup=keyboard)
 
-
-@dp.message(HomeworkState.choosing_subject)
+@dp.message(HomeworkState.choosing_subject_for_adding)
 async def choose_subject(message: types.Message, state: FSMContext):
     if message.text == "🚫 Отмена":
         await state.clear()
@@ -543,7 +542,6 @@ async def choose_subject(message: types.Message, state: FSMContext):
     
     await state.set_state(HomeworkState.entering_task)
     await message.answer("Введите задание:", reply_markup=types.ReplyKeyboardRemove())
-
 
 @dp.message(HomeworkState.entering_task)
 async def enter_task(message: types.Message, state: FSMContext):
@@ -593,11 +591,40 @@ async def receive_files(message: types.Message, state: FSMContext):
 
 @dp.message(HomeworkState.attaching_files, F.text == "➡ Пропустить")
 async def skip_files(message: types.Message, state: FSMContext):
-    await message.answer("Введите срок выполнения (в формате ДД.ММ.ГГГГ):", reply_markup=types.ReplyKeyboardRemove())
+    data = await state.get_data()
+    subject = data.get("subject")
+
+    # Find the next class date for the selected subject
+    next_class_date = None
+    today = datetime.now()
+    SEMESTER_START = datetime(2024, 9, 2)
+    weeks_passed = (today - SEMESTER_START).days // 7
+    current_week = "1" if weeks_passed % 2 == 0 else "2"
+
+    for week_offset in range(2):  # Check this week and next week
+        week = "1" if (int(current_week) + week_offset) % 2 == 0 else "2"
+        for day_offset in range(7):
+            check_date = today + timedelta(days=day_offset + week_offset * 7)
+            day_name = check_date.strftime("%A")
+            days_map = {
+                "Monday": "Понедельник", "Tuesday": "Вторник", "Wednesday": "Среда", 
+                "Thursday": "Четверг", "Friday": "Пятница", "Saturday": "Суббота", "Sunday": "Воскресенье"
+            }
+            day_name_rus = days_map.get(day_name, day_name)
+            lessons = schedule.get(week, {}).get(day_name_rus, [])
+            for lesson in lessons:
+                if subject in lesson:
+                    if next_class_date is None or check_date < next_class_date:
+                        next_class_date = check_date
+                    break
+            if next_class_date and next_class_date <= check_date:
+                break
+        if next_class_date:
+            break
+
+    next_class_date_str = next_class_date.strftime("%d.%m.%Y") if next_class_date else "не найдено"
+    await message.answer(f"Введите срок выполнения (в формате ДД.ММ.ГГГГ). Следующее занятие по предмету {subject} будет {next_class_date_str}:", reply_markup=types.ReplyKeyboardRemove())
     await state.set_state(HomeworkState.entering_due_date)
-
-
-
 
 @dp.message(HomeworkState.entering_due_date)
 async def enter_due_date(message: types.Message, state: FSMContext):
