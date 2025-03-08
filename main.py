@@ -23,7 +23,7 @@ class HomeworkState(StatesGroup):
     changing = State()
     choosing_subject = State()
     changing_subject = State()
-    attaching_file = State()
+    attaching_files = State()
     entering_task = State()
     entering_due_date = State()
     changing = State()
@@ -253,9 +253,9 @@ async def today_schedule(message: types.Message):
 async def tomorrow_schedule(message: types.Message):
     now = datetime.now()
 
-    SEMESTER_START = datetime(2024, 9, 2)  # 2 сентября 2024
+    SEMЕSTER_START = datetime(2024, 9, 2)  # 2 сентября 2024
 
-    weeks_passed = (now - SEMESTER_START).days // 7
+    weeks_passed = (now - SEMЕSTER_START).days // 7
 
     current_week = "1" if weeks_passed % 2 == 0 else "2"
 
@@ -378,11 +378,6 @@ async def main():
     asyncio.create_task(check_for_changes())
     asyncio.create_task(send_tomorrow_schedule())  # Запускаем задачу для отправки оповещений
 
-
-
-
-
-
 #----------------------------------------------------------------------------------------------------------#
 
 # Функция добавления записи домашнего задания
@@ -416,28 +411,37 @@ async def choose_subject(message: types.Message, state: FSMContext):
 @dp.message(HomeworkState.entering_task)
 async def enter_task(message: types.Message, state: FSMContext):
     await state.update_data(task=message.text)
-    await state.set_state(HomeworkState.attaching_file)
+    await state.set_state(HomeworkState.attaching_files)
     keyboard = ReplyKeyboardMarkup(
-        keyboard=[[KeyboardButton(text="📎 Прикрепить файл")], [KeyboardButton(text="➡ Пропустить")], [KeyboardButton(text="🚫 Отмена")]],
+        keyboard=[[KeyboardButton(text="📎 Прикрепить файлы")], [KeyboardButton(text="➡ Пропустить")], [KeyboardButton(text="🚫 Отмена")]],
         resize_keyboard=True
     )
-    await message.answer("Хотите прикрепить файл?", reply_markup=keyboard)
+    await message.answer("Хотите прикрепить файлы?", reply_markup=keyboard)
 
-@dp.message(HomeworkState.attaching_file, F.text == "🚫 Отмена")
-async def cancel_attaching_file(message: types.Message, state: FSMContext):
+@dp.message(HomeworkState.attaching_files, F.text == "🚫 Отмена")
+async def cancel_attaching_files(message: types.Message, state: FSMContext):
     await state.clear()
     await message.answer("Действие отменено.", reply_markup=main_keyboard)
 
-@dp.message(HomeworkState.attaching_file, F.text == "📎 Прикрепить файл")
-async def ask_for_file(message: types.Message, state: FSMContext):
-    
-    await message.answer("Отправьте файл (PDF, DOCX и другие).", reply_markup=types.ReplyKeyboardRemove())
+@dp.message(HomeworkState.attaching_files, F.text == "📎 Прикрепить файлы")
+async def ask_for_files(message: types.Message, state: FSMContext):
+    keyboard = ReplyKeyboardMarkup(
+        keyboard=[[KeyboardButton(text="➡ Пропустить")], [KeyboardButton(text="🚫 Отмена")]],
+        resize_keyboard=True
+    )
+    await message.answer("Отправьте файлы (до 10 файлов, PDF, DOCX и другие).", reply_markup=keyboard)
 
-# Разрешенные расширения файлов
 ALLOWED_EXTENSIONS = {"pdf", "docx", "png", "jpeg", "jpg"}
 
-@dp.message(HomeworkState.attaching_file, F.document)
-async def receive_file(message: types.Message, state: FSMContext):
+@dp.message(HomeworkState.attaching_files, F.document)
+async def receive_files(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    files = data.get("files", [])
+
+    if len(files) >= 10:
+        await message.answer("⚠ Вы можете прикрепить не более 10 файлов.")
+        return
+
     file_name = message.document.file_name
     file_extension = file_name.split(".")[-1].lower()
 
@@ -445,21 +449,17 @@ async def receive_file(message: types.Message, state: FSMContext):
         await message.answer("⚠ Этот формат файла не поддерживается. Разрешены только PDF, DOCX, PNG, JPEG, JPG.")
         return
 
-    file_id = message.document.file_id
-    await state.update_data(file_id=file_id, file_name=file_name)
-    await state.set_state(HomeworkState.entering_due_date)
-    await message.answer("Введите срок выполнения (в формате ДД.ММ.ГГГГ):")
+    files.append({"file_id": message.document.file_id, "file_name": file_name})
+    await state.update_data(files=files)
 
+    await message.answer(f"Файл {file_name} прикреплен. Прикрепите еще файлы или нажмите '➡ Пропустить'.")
 
-@dp.message(HomeworkState.attaching_file, F.text == "➡ Пропустить")
-async def skip_file(message: types.Message, state: FSMContext):
-    if message.text == "🚫 Отмена":
-        await state.clear()
-        await message.answer("Действие отменено.", reply_markup=main_keyboard)
-        return
-    await state.update_data(file_id=None, file_name=None)
-    await state.set_state(HomeworkState.entering_due_date)
+@dp.message(HomeworkState.attaching_files, F.text == "➡ Пропустить")
+async def skip_files(message: types.Message, state: FSMContext):
     await message.answer("Введите срок выполнения (в формате ДД.ММ.ГГГГ):", reply_markup=types.ReplyKeyboardRemove())
+    await state.set_state(HomeworkState.entering_due_date)
+
+
 
 
 @dp.message(HomeworkState.entering_due_date)
@@ -491,10 +491,9 @@ async def enter_due_date(message: types.Message, state: FSMContext):
         "subject": data["subject"],
         "task": data["task"],
         "due_date": message.text,
-        "date_added": datetime.now().strftime("%d.%м.%Y"),
+        "date_added": datetime.now().strftime("%d.%m.%Y"),  # Corrected format string
         "status": "Не выполнено ❌",
-        "file_id": data.get("file_id"),
-        "file_name": data.get("file_name")
+        "files": data.get("files", [])
     })
 
     save_homework(user_id, homework)  # Сохраняем домашку для конкретного пользователя
@@ -503,7 +502,6 @@ async def enter_due_date(message: types.Message, state: FSMContext):
     await message.answer("Задание добавлено!", reply_markup=main_keyboard)
 
 
-# Функция просмотра записей домашних заданий
 @dp.message(F.text == "Посмотреть домашние задания")
 async def show_homework(message: types.Message):
     user_id = message.from_user.id  # Получаем ID пользователя
@@ -522,13 +520,13 @@ async def show_homework(message: types.Message):
                 f"Дата добавления: {task['date_added']}"
             )
             
-            if task.get("file_id"):
-                response += f"\nПрикрепленный файл: {task['file_name']}"
-                await message.answer_document(task["file_id"], caption=response)
+            if task.get("files"):
+                media_group = []
+                for file in task["files"]:
+                    media_group.append(types.InputMediaDocument(media=file["file_id"], caption=response if len(media_group) == 0 else ""))
+                await bot.send_media_group(chat_id=message.chat.id, media=media_group)
             else:
                 await message.answer(response)
-
-
 
 # Клавиатура для отмены
 cancel_keyboard = InlineKeyboardMarkup(inline_keyboard=[
@@ -743,8 +741,8 @@ async def send_deadline_reminders():
                         logger.info(f"Загружено {len(homework)} заданий для пользователя {user_id}")
                         for task in homework:
                             try:
-                                due_date = datetime.strptime(task["due_date"], "%d.%m.%Y").date()
-                                logger.info(f"Проверка задания: {task['task']} с дедлайном {due_date.strftime('%d.%m.%Y')}")
+                                due_date = datetime.strptime(task["due_date"], "%d.%м.%Y").date()
+                                logger.info(f"Проверка задания: {task['task']} с дедлайном {due_date.strftime('%d.%м.%Y')}")
                                 logger.info(f"Сравнение дат: {due_date - timedelta(days=1)} и {now.date()}")
                                 if due_date - timedelta(days=1) == now.date():
                                     logger.info(f"Задание {task['task']} имеет дедлайн завтра")
@@ -855,7 +853,7 @@ async def process_new_time(message: types.Message, state: FSMContext):
 async def process_new_deadline_time(message: types.Message, state: FSMContext):
     new_time = message.text.strip()
     try:
-        datetime.strptime(new_time, "%H:%M")
+        datetime.strptime(new_time, "%H:%М")
         user_id = message.from_user.id
         settings = load_user_settings(user_id)
         settings["deadline_notification_time"] = new_time
