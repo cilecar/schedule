@@ -29,6 +29,7 @@ class HomeworkState(StatesGroup):
     changing = State()
     changing_time = State()
     changing_deadline_time = State()
+    sending_global_message = State()
 
 main_keyboard = ReplyKeyboardMarkup(
     keyboard=[
@@ -77,7 +78,19 @@ schedule = {
             "11:30 - пр.Дискретная математика Лисин Д.А." ] 
         } }
 
-schedule_subjects = ["Интегралы и дифференциальные уравнения", "Линейная алгебра и функция нескольких переменных", "История информационного противоборства", "Право", "Основы информационной безопасности", "Иностранный язык", "Социальные и этические вопросы в информационной сфере", "История России", "Физика", "Основы программирования", "Дискретная математика"]
+schedule_subjects = [
+        "Интегралы и дифференциальные уравнения", 
+        "Линейная алгебра и функция нескольких переменных", 
+        "История информационного противоборства", 
+        "Право", 
+        "Основы информационной безопасности", 
+        "Иностранный язык", 
+        "Социальные и этические вопросы в информационной сфере", 
+        "История России", 
+        "Физика", 
+        "Основы программирования", 
+        "Дискретная математика"
+    ]
 homework = []
 
 # Функция для загрузки настроек оповещений
@@ -107,6 +120,43 @@ def save_user_settings(user_id, settings_data):
     with open("users_settings.json", "w", encoding="utf-8") as f:
         json.dump(settings, f, ensure_ascii=False, indent=4)
 
+# Функция для загрузки списка пользователей
+def load_users():
+    if os.path.exists("users.json"):
+        with open("users.json", "r", encoding="utf-8") as f:
+            return json.load(f)
+    return []
+
+# Функция для сохранения списка пользователей
+def save_users(users):
+    with open("users.json", "w", encoding="utf-8") as f:
+        json.dump(users, f, ensure_ascii=False, indent=4)
+
+
+@dp.message(Command("send_global_message"))
+async def send_global_message(message: types.Message, state: FSMContext):
+    user_id = message.from_user.id
+    if user_id != 706172589:
+        await message.answer("У вас нет прав для выполнения этой команды.")
+        return
+
+    await message.answer("Введите сообщение для отправки всем пользователям:")
+    await state.set_state(HomeworkState.sending_global_message)
+
+@dp.message(HomeworkState.sending_global_message)
+async def process_global_message(message: types.Message, state: FSMContext):
+    global_message = message.text.strip()
+    formatted_message = f"❗️Сообщение от администратора❗️\n\n{global_message}"
+    users = load_users()
+
+    for user_id in users:
+        try:
+            await bot.send_message(user_id, formatted_message)
+        except Exception as e:
+            logger.error(f"Не удалось отправить сообщение пользователю {user_id}: {e}")
+
+    await state.clear()
+    await message.answer("Сообщение отправлено всем пользователям.")
 
 @dp.message(F.text == "Управление оповещениями о завтрашних парах")
 async def toggle_notifications(message: types.Message):
@@ -397,6 +447,7 @@ async def skip_file(message: types.Message, state: FSMContext):
     await state.set_state(HomeworkState.entering_due_date)
     await message.answer("Введите срок выполнения (в формате ДД.ММ.ГГГГ):", reply_markup=types.ReplyKeyboardRemove())
 
+
 @dp.message(HomeworkState.entering_due_date)
 async def enter_due_date(message: types.Message, state: FSMContext):
     if message.text == "🚫 Отмена":
@@ -405,7 +456,13 @@ async def enter_due_date(message: types.Message, state: FSMContext):
         return
 
     try:
-        datetime.strptime(message.text, "%d.%m.%Y")
+        due_date = datetime.strptime(message.text, "%d.%m.%Y").date()
+        if due_date < datetime.now().date():
+            await message.answer("Некорректная дата. Дата не может быть в прошлом. Введите дату в формате ДД.ММ.ГГГГ.")
+            return
+        if due_date > datetime(2030, 12, 31).date():
+            await message.answer("Некорректная дата. Дата не может быть позже 31.12.2030. Введите дату в формате ДД.ММ.ГГГГ.")
+            return
     except ValueError:
         await message.answer("Некорректный формат. Введите дату в формате ДД.ММ.ГГГГ.")
         return
@@ -420,7 +477,7 @@ async def enter_due_date(message: types.Message, state: FSMContext):
         "subject": data["subject"],
         "task": data["task"],
         "due_date": message.text,
-        "date_added": datetime.now().strftime("%d.%m.%Y"),
+        "date_added": datetime.now().strftime("%d.%м.%Y"),
         "status": "Не выполнено ❌",
         "file_id": data.get("file_id"),
         "file_name": data.get("file_name")
@@ -738,7 +795,6 @@ async def notification_settings(message: types.Message):
 
     await message.answer(response, reply_markup=keyboard)
 
-# ...existing code...
 
 @dp.callback_query(lambda c: c.data in ["toggle_schedule_notifications", "change_schedule_notification_time", "toggle_deadline_notifications", "change_deadline_notification_time", "cancel"])
 async def process_notification_settings(callback_query: types.CallbackQuery, state: FSMContext):
