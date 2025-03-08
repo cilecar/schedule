@@ -28,6 +28,7 @@ class HomeworkState(StatesGroup):
     entering_due_date = State()
     changing = State()
     changing_time = State()
+    changing_deadline_time = State()
 
 main_keyboard = ReplyKeyboardMarkup(
     keyboard=[
@@ -37,8 +38,7 @@ main_keyboard = ReplyKeyboardMarkup(
         [KeyboardButton(text="Добавить домашнее задание")],
         [KeyboardButton(text="Посмотреть домашние задания")],
         [KeyboardButton(text="Изменить статус задания")],
-        [KeyboardButton(text="Управление оповещениями о завтрашних парах")],  # Новая кнопка
-        [KeyboardButton(text="Изменить время оповещения")]  # Кнопка для изменения времени
+        [KeyboardButton(text="Настройка уведомлений")]  # Новая кнопка
     ],
     resize_keyboard=True
 )
@@ -80,16 +80,21 @@ schedule = {
 schedule_subjects = ["Интегралы и дифференциальные уравнения", "Линейная алгебра и функция нескольких переменных", "История информационного противоборства", "Право", "Основы информационной безопасности", "Иностранный язык", "Социальные и этические вопросы в информационной сфере", "История России", "Физика", "Основы программирования", "Дискретная математика"]
 homework = []
 
-# Функция для загрузки настроек пользователя
+# Функция для загрузки настроек оповещений
 def load_user_settings(user_id):
+    default_settings = {
+        "notifications_enabled": True,
+        "notification_time": "20:00",
+        "deadline_notifications_enabled": True,
+        "deadline_notification_time": "12:00"
+    }
     if os.path.exists("users_settings.json"):
         with open("users_settings.json", "r", encoding="utf-8") as f:
             settings = json.load(f)
-            return settings.get(str(user_id), {"notifications_enabled": True, "notification_time": "22:45"})
-    return {"notifications_enabled": True, "notification_time": "22:45"}  # По умолчанию уведомления включены и время 22:45
+            return settings.get(str(user_id), default_settings)
+    return default_settings  # По умолчанию уведомления включены и время 20:00 и 12:00
 
-
-# Функция для сохранения настроек пользователя
+# Функция для сохранения настроек оповещений
 def save_user_settings(user_id, settings_data):
     if os.path.exists("users_settings.json"):
         with open("users_settings.json", "r", encoding="utf-8") as f:
@@ -582,19 +587,6 @@ async def process_status_change(callback_query: types.CallbackQuery, state: FSMC
     await callback_query.answer()
 
 
-async def send_deadline_reminders():
-    while True:
-        now = datetime.now()
-        for task in homework:
-            due_date = datetime.strptime(task["due_date"], "%d.%m.%Y")
-            if due_date - timedelta(days=1) <= now < due_date and task["status"] == "Не выполнено ❌":
-                await bot.send_message(
-                    chat_id="706172589",
-                    text=f"❗Напоминание: Завтра дедлайн по заданию {task['subject']}!❗\n: {task['task']}"
-                )
-        await asyncio.sleep(3600)
-
-
 USER_HOMEWORK_DIR = "homework_data/"
 
 # Функция загрузки домашнего задания для конкретного пользователя
@@ -613,14 +605,201 @@ def save_homework(user_id, homework_data):
         json.dump(homework_data, f, ensure_ascii=False, indent=4)
 
 
-async def main():
-    logging.basicConfig(level=logging.INFO)
-    asyncio.create_task(send_deadline_reminders())
-    await bot.delete_webhook(drop_pending_updates=True)
-    loop = asyncio.get_event_loop()
-    loop.create_task(send_tomorrow_schedule())
-    await dp.start_polling(bot)
 
+
+@dp.message(F.text == "Управление оповещениями о дедлайнах")
+async def toggle_deadline_notifications(message: types.Message):
+    user_id = message.from_user.id
+    settings = load_user_settings(user_id)
+
+    settings["deadline_notifications_enabled"] = not settings.get("deadline_notifications_enabled", True)
+    
+    save_user_settings(user_id, settings)
+
+    status = "включены" if settings["deadline_notifications_enabled"] else "выключены"
+    await message.answer(f"Оповещения о дедлайнах {status}.")
+
+@dp.message(F.text == "Изменить время оповещения о дедлайнах")
+async def change_deadline_notification_time(message: types.Message, state: FSMContext):
+    await message.answer("Введите новое время оповещения о дедлайнах в формате ЧЧ:ММ:")
+    await state.set_state(HomeworkState.changing_deadline_time)  # Используем новое состояние
+
+@dp.message(HomeworkState.changing_deadline_time)
+async def process_new_deadline_time(message: types.Message, state: FSMContext):
+    new_time = message.text.strip()
+    try:
+        datetime.strptime(new_time, "%H:%M")
+        user_id = message.from_user.id
+        settings = load_user_settings(user_id)
+        settings["deadline_notification_time"] = new_time
+        save_user_settings(user_id, settings)
+        await message.answer(f"Время оповещения о дедлайнах изменено на {new_time}.")
+        await state.clear()  # Очищаем состояние
+    except ValueError:
+        await message.answer("Неверный формат времени. Пожалуйста, введите время в формате ЧЧ:ММ.")
+
+
+# Функция напоминания о дедлайнах
+sent_deadline_notifications = set()  # Храним пользователей, которым уже отправили сообщение
+
+
+async def send_deadline_reminders():
+    global sent_deadline_notifications
+    
+    logger.info("Фоновая задача для отправки оповещений о дедлайнах запущена")
+    
+    while True:
+        now = datetime.now()
+        logger.info(f"Текущее время: {now.strftime('%H:%M')}")
+
+        if os.path.exists("users_settings.json"):
+            with open("users_settings.json", "r", encoding="utf-8") as f:
+                settings = json.load(f)
+
+            for user_id, user_settings in settings.items():
+                if user_settings.get("deadline_notifications_enabled", True):
+                    notification_time = user_settings.get("deadline_notification_time", "12:00")
+                    hour, minute = map(int, notification_time.split(":"))
+
+                    if now.hour == hour and now.minute == minute:
+                        logger.info(f"Проверка уведомлений для пользователя {user_id} в {now.strftime('%H:%M')}")
+                        # Проверяем, не отправляли ли уже сегодня уведомление этому пользователю
+                        if user_id in sent_deadline_notifications:
+                            logger.info(f"Уведомление уже отправлено пользователю {user_id} сегодня")
+                            continue  # Если уже отправлено, пропускаем
+
+                        homework = load_homework(user_id)
+                        logger.info(f"Загружено {len(homework)} заданий для пользователя {user_id}")
+                        for task in homework:
+                            try:
+                                due_date = datetime.strptime(task["due_date"], "%d.%m.%Y").date()
+                                logger.info(f"Проверка задания: {task['task']} с дедлайном {due_date.strftime('%d.%m.%Y')}")
+                                logger.info(f"Сравнение дат: {due_date - timedelta(days=1)} и {now.date()}")
+                                if due_date - timedelta(days=1) == now.date():
+                                    logger.info(f"Задание {task['task']} имеет дедлайн завтра")
+                                    if task["status"] == "Не выполнено ❌":
+                                        logger.info(f"Задание {task['task']} не выполнено, отправка уведомления")
+                                        try:
+                                            response = (
+                                                "❗️Напоминание, завтра дедлайн❗️\n"
+                                                f"Предмет: {task['subject']}\n"
+                                                f"Задание: {task['task']}\n"
+                                                f"Сделать: до {task['due_date']}\n"
+                                                f"Дата добавления: {task['date_added']}"
+                                            )
+                                            if task.get("file_id"):
+                                                response += f"\nПрикрепленный файл: {task['file_name']}"
+                                                await bot.send_document(user_id, task["file_id"], caption=response)
+                                            else:
+                                                await bot.send_message(user_id, response)
+                                            sent_deadline_notifications.add(user_id)  # Запоминаем, что отправили
+                                            logger.info(f"Уведомление отправлено пользователю {user_id} по заданию {task['task']}")
+                                        except Exception as e:
+                                            logging.error(f"Не удалось отправить сообщение пользователю {user_id}: {e}")
+                                    else:
+                                        logger.info(f"Задание {task['task']} уже выполнено")
+                                else:
+                                    logger.info(f"Задание {task['task']} не имеет дедлайн завтра")
+                            except ValueError as e:
+                                logging.error(f"Ошибка при разборе даты дедлайна для пользователя {user_id}: {e}")
+
+        # Если уже наступил новый день – сбрасываем список отправленных уведомлений
+        if now.hour == 0 and now.minute == 0:
+            sent_deadline_notifications.clear()
+
+        await asyncio.sleep(10)
+
+
+@dp.message(F.text == "Настройка уведомлений")
+async def notification_settings(message: types.Message):
+    user_id = message.from_user.id
+    settings = load_user_settings(user_id)
+
+    notifications_status = "включено" if settings.get("notifications_enabled", True) else "выключено"
+    deadline_notifications_status = "включено" if settings.get("deadline_notifications_enabled", True) else "выключено"
+    notification_time = settings.get("notification_time", "20:00")
+    deadline_notification_time = settings.get("deadline_notification_time", "12:00")
+
+    response = (
+        f"1. Оповещение о завтрашних парах: {notifications_status}\n"
+        f"2. Время оповещения о завтрашних парах: {notification_time}\n"
+        f"3. Оповещение о дедлайне: {deadline_notifications_status}\n"
+        f"4. Время оповещения о дедлайне: {deadline_notification_time}\n\n"
+        "Что хотите изменить?"
+    )
+
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=f"{'Выключить' if settings.get('notifications_enabled', True) else 'Включить'} оповещение расписания", callback_data="toggle_schedule_notifications")],
+        [InlineKeyboardButton(text="Время оповещения расписания", callback_data="change_schedule_notification_time")],
+        [InlineKeyboardButton(text=f"{'Выключить' if settings.get('deadline_notifications_enabled', True) else 'Включить'} оповещение о дедлайне", callback_data="toggle_deadline_notifications")],
+        [InlineKeyboardButton(text="Время оповещения о дедлайне", callback_data="change_deadline_notification_time")],
+        [InlineKeyboardButton(text="🚫 Отмена", callback_data="cancel")]
+    ])
+
+    await message.answer(response, reply_markup=keyboard)
+
+# ...existing code...
+
+@dp.callback_query(lambda c: c.data in ["toggle_schedule_notifications", "change_schedule_notification_time", "toggle_deadline_notifications", "change_deadline_notification_time", "cancel"])
+async def process_notification_settings(callback_query: types.CallbackQuery, state: FSMContext):
+    user_id = callback_query.from_user.id
+    settings = load_user_settings(user_id)
+
+    if callback_query.data == "toggle_schedule_notifications":
+        settings["notifications_enabled"] = not settings.get("notifications_enabled", True)
+        save_user_settings(user_id, settings)
+        status = "включены" if settings["notifications_enabled"] else "выключены"
+        await callback_query.message.edit_text(f"Оповещения о завтрашних парах {status}.")
+    elif callback_query.data == "change_schedule_notification_time":
+        await callback_query.message.answer("Введите новое время оповещения в формате ЧЧ:ММ:")
+        await state.set_state(HomeworkState.changing_time)
+    elif callback_query.data == "toggle_deadline_notifications":
+        settings["deadline_notifications_enabled"] = not settings.get("deadline_notifications_enabled", True)
+        save_user_settings(user_id, settings)
+        status = "включены" if settings["deadline_notifications_enabled"] else "выключены"
+        await callback_query.message.edit_text(f"Оповещения о дедлайнах {status}.")
+    elif callback_query.data == "change_deadline_notification_time":
+        await callback_query.message.answer("Введите новое время оповещения о дедлайнах в формате ЧЧ:ММ:")
+        await state.set_state(HomeworkState.changing_deadline_time)
+    elif callback_query.data == "cancel":
+        await callback_query.message.edit_text("Действие отменено.")
+        await state.clear()
+
+    await callback_query.answer()
+
+@dp.message(HomeworkState.changing_time)
+async def process_new_time(message: types.Message, state: FSMContext):
+    new_time = message.text.strip()
+    try:
+        datetime.strptime(new_time, "%H:%M")
+        user_id = message.from_user.id
+        settings = load_user_settings(user_id)
+        settings["notification_time"] = new_time
+        save_user_settings(user_id, settings)
+        await message.answer(f"Время оповещения изменено на {new_time}.")
+        await state.clear()  # Очищаем состояние
+    except ValueError:
+        await message.answer("Неверный формат времени. Пожалуйста, введите время в формате ЧЧ:ММ.")
+
+@dp.message(HomeworkState.changing_deadline_time)
+async def process_new_deadline_time(message: types.Message, state: FSMContext):
+    new_time = message.text.strip()
+    try:
+        datetime.strptime(new_time, "%H:%M")
+        user_id = message.from_user.id
+        settings = load_user_settings(user_id)
+        settings["deadline_notification_time"] = new_time
+        save_user_settings(user_id, settings)
+        await message.answer(f"Время оповещения о дедлайнах изменено на {new_time}.")
+        await state.clear()  # Очищаем состояние
+    except ValueError:
+        await message.answer("Неверный формат времени. Пожалуйста, введите время в формате ЧЧ:ММ.")
+
+# Запуск фоновой задачи для отправки оповещений о дедлайнах
+async def main():
+    asyncio.create_task(send_deadline_reminders())
+    asyncio.create_task(send_tomorrow_schedule())  # Запускаем задачу для отправки оповещений
+    await dp.start_polling(bot)
 
 if __name__ == "__main__":
     asyncio.run(main())
