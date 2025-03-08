@@ -214,6 +214,143 @@ async def start(message: types.Message):
 
     await message.answer(welcome_message, reply_markup=main_keyboard)
 
+@dp.message(F.text == "Посмотреть домашние задания")
+async def show_homework(message: types.Message, state: FSMContext):
+    keyboard = ReplyKeyboardMarkup(
+        keyboard=[[KeyboardButton(text="Все задания")]] + [[KeyboardButton(text=subj)] for subj in schedule_subjects] + [[KeyboardButton(text="🚫 Отмена")]], 
+        resize_keyboard=True
+    )
+    await state.set_state(HomeworkState.choosing_subject)
+    await message.answer("Выберите предмет или нажмите 'Все задания':", reply_markup=keyboard)
+
+@dp.message(HomeworkState.choosing_subject, F.text == "🚫 Отмена")
+async def cancel_homework_selection(message: types.Message, state: FSMContext):
+    await state.clear()
+    await message.answer("Действие отменено.", reply_markup=main_keyboard)
+
+@dp.message(HomeworkState.choosing_subject)
+async def display_homework_by_subject(message: types.Message, state: FSMContext):
+    user_id = message.from_user.id  # Получаем ID пользователя
+    homework = load_homework(user_id)  # Загружаем домашку для пользователя
+
+    if message.text == "🚫 Отмена":
+        await state.clear()
+        await message.answer("Действие отменено.", reply_markup=main_keyboard)
+        return
+
+    if message.text == "Все задания":
+        if not homework:
+            await message.answer("Домашних заданий нет.")
+        else:
+            for task in homework:
+                response = (
+                    f"Статус: {task['status']}\n"
+                    f"Предмет: {task['subject']}\n"
+                    f"Задание: {task['task']}\n"
+                    f"Сделать: до {task['due_date']}\n"
+                    f"Дата добавления: {task['date_added']}"
+                )
+                
+                task_id = task['task'][:10]  # Use a shorter unique identifier
+                keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="✅ Выполнено", callback_data=f"done_{task_id}")],
+                    [InlineKeyboardButton(text="❌ Не выполнено", callback_data=f"notdone_{task_id}")],
+                    [InlineKeyboardButton(text="🗑 Удалить", callback_data=f"delete_{task_id}")],
+                    [InlineKeyboardButton(text="🚫 Отмена", callback_data="cancel")]
+                ])
+                
+                if task.get("files"):
+                    media_group = []
+                    for file in task["files"]:
+                        media_group.append(types.InputMediaDocument(media=file["file_id"], caption=response if len(media_group) == 0 else ""))
+                    await bot.send_media_group(chat_id=message.chat.id, media=media_group)
+                else:
+                    await message.answer(response, reply_markup=keyboard)
+        await state.set_state(HomeworkState.choosing_subject)  # Allow user to choose another subject
+        return
+
+    if message.text not in schedule_subjects:
+        await message.answer("Выберите предмет из списка.")
+        return
+
+    subject_homework = [task for task in homework if task["subject"] == message.text]
+
+    if not subject_homework:
+        await message.answer(f"Домашних заданий по предмету {message.text} нет.")
+    else:
+        for task in subject_homework:
+            response = (
+                f"Статус: {task['status']}\n"
+                f"Предмет: {task['subject']}\n"
+                f"Задание: {task['task']}\n"
+                f"Сделать: до {task['due_date']}\n"
+                f"Дата добавления: {task['date_added']}"
+            )
+            
+            task_id = task['task'][:10]  # Use a shorter unique identifier
+            keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="✅ Выполнено", callback_data=f"done_{task_id}")],
+                [InlineKeyboardButton(text="❌ Не выполнено", callback_data=f"notdone_{task_id}")],
+                [InlineKeyboardButton(text="🗑 Удалить", callback_data=f"delete_{task_id}")],
+                [InlineKeyboardButton(text="🚫 Отмена", callback_data="cancel")]
+            ])
+            
+            if task.get("files"):
+                media_group = []
+                for file in task["files"]:
+                    media_group.append(types.InputMediaDocument(media=file["file_id"], caption=response if len(media_group) == 0 else ""))
+                await bot.send_media_group(chat_id=message.chat.id, media=media_group)
+            else:
+                await message.answer(response, reply_markup=keyboard)
+    
+    await state.set_state(HomeworkState.choosing_subject)  # Allow user to choose another subject
+
+@dp.callback_query(lambda c: c.data.startswith("done_") or c.data.startswith("notdone_") or c.data.startswith("delete_") or c.data == "cancel")
+async def process_status_change(callback_query: types.CallbackQuery, state: FSMContext):
+    user_id = callback_query.from_user.id  # Получаем ID пользователя
+    data = await state.get_data()
+    homework = load_homework(user_id)  # Загружаем домашку для пользователя
+
+    if callback_query.data == "cancel":
+        await state.clear()
+        await callback_query.message.answer("Действие отменено.", reply_markup=main_keyboard)
+        await callback_query.answer()
+        return
+
+    action, task_id = callback_query.data.split("_", 1)
+    selected_task = next((task for task in homework if task["task"].startswith(task_id)), None)
+
+    if not selected_task:
+        await callback_query.message.answer("Ошибка: задание не найдено.", reply_markup=main_keyboard)
+        await callback_query.answer()
+        return
+
+    # Обновляем статус задачи
+    if action == "done":
+        selected_task["status"] = "Выполнено ✅"
+    elif action == "notdone":
+        selected_task["status"] = "Не выполнено ❌"
+    elif action == "delete":
+        # Удаляем задание
+        homework = [task for task in homework if task != selected_task]  # Удаляем задачу
+        save_homework(user_id, homework)
+        await callback_query.message.answer('Задача удалена.', reply_markup=main_keyboard)
+        await state.clear()
+        return
+
+    # Обновляем список заданий с новым статусом
+    for task in homework:
+        if task["task"] == selected_task["task"]:  # Сравниваем по имени задания
+            task["status"] = selected_task["status"]  # Обновляем статус
+            break  # Останавливаемся на первой найденной задаче
+
+    # Сохраняем обновленные задания
+    save_homework(user_id, homework)
+
+    await state.clear()
+    await callback_query.message.answer(f'Установлен статус: {selected_task["status"]}', reply_markup=main_keyboard)
+    await callback_query.answer()
+
 
 # Функция отображения всего расписания 
 @dp.message(F.text == "Полное расписание")
@@ -305,8 +442,6 @@ async def process_new_time(message: types.Message, state: FSMContext):
         await message.answer("Неверный формат времени. Пожалуйста, введите время в формате ЧЧ:ММ.")
 
 
-
-
 # Функция напоминания о завтрашних парах
 sent_notifications = set()  # Храним пользователей, которым уже отправили сообщение
 
@@ -326,6 +461,7 @@ async def send_tomorrow_schedule():
                     hour, minute = map(int, notification_time.split(":"))
 
                     if now.hour == hour and now.minute == minute:
+
                         # Проверяем, не отправляли ли уже сегодня уведомление этому пользователю
                         if user_id in sent_notifications:
                             continue  # Если уже отправлено, пропускаем
@@ -348,14 +484,12 @@ async def send_tomorrow_schedule():
                         except Exception as e:
                             logging.error(f"Не удалось отправить сообщение пользователю {user_id}: {e}")
 
+
         # Если уже наступил новый день – сбрасываем список отправленных уведомлений
         if now.hour == 0 and now.minute == 0:
             sent_notifications.clear()
 
         await asyncio.sleep(1)  # Проверяем каждую минуту
-
-
-
 
 
 # Функция для проверки изменений в настройках
@@ -373,10 +507,13 @@ async def check_for_changes():
 
         await asyncio.sleep(10)
 
+
+
 # Запуск фоновой задачи для проверки изменений
 async def main():
     asyncio.create_task(check_for_changes())
     asyncio.create_task(send_tomorrow_schedule())  # Запускаем задачу для отправки оповещений
+
 
 #----------------------------------------------------------------------------------------------------------#
 
@@ -471,11 +608,8 @@ async def enter_due_date(message: types.Message, state: FSMContext):
 
     try:
         due_date = datetime.strptime(message.text, "%d.%m.%Y").date()
-        if due_date < datetime.now().date():
-            await message.answer("Некорректная дата. Дата не может быть в прошлом. Введите дату в формате ДД.ММ.ГГГГ.")
-            return
-        if due_date > datetime(2030, 12, 31).date():
-            await message.answer("Некорректная дата. Дата не может быть позже 31.12.2030. Введите дату в формате ДД.ММ.ГГГГ.")
+        if (due_date < datetime.now().date()) or (due_date > datetime(2030, 12, 31).date()):
+            await message.answer("Некорректная дата. Введите дату в формате ДД.ММ.ГГГГ.")
             return
     except ValueError:
         await message.answer("Некорректный формат. Введите дату в формате ДД.ММ.ГГГГ.")
@@ -484,7 +618,7 @@ async def enter_due_date(message: types.Message, state: FSMContext):
     data = await state.get_data()
     user_id = message.from_user.id  # Получаем ID пользователя
 
-    # Загружаем домашние задания для конкретного пользователя
+
     homework = load_homework(user_id)
 
     homework.append({
@@ -496,42 +630,19 @@ async def enter_due_date(message: types.Message, state: FSMContext):
         "files": data.get("files", [])
     })
 
-    save_homework(user_id, homework)  # Сохраняем домашку для конкретного пользователя
+    save_homework(user_id, homework)  
 
     await state.clear()
     await message.answer("Задание добавлено!", reply_markup=main_keyboard)
 
 
-@dp.message(F.text == "Посмотреть домашние задания")
-async def show_homework(message: types.Message):
-    user_id = message.from_user.id  # Получаем ID пользователя
-
-    homework = load_homework(user_id)  # Загружаем домашку для пользователя
-
-    if not homework:
-        await message.answer("Домашних заданий нет.")
-    else:
-        for task in homework:
-            response = (
-                f"Статус: {task['status']}\n"
-                f"Предмет: {task['subject']}\n"
-                f"Задание: {task['task']}\n"
-                f"Сделать: до {task['due_date']}\n"
-                f"Дата добавления: {task['date_added']}"
-            )
-            
-            if task.get("files"):
-                media_group = []
-                for file in task["files"]:
-                    media_group.append(types.InputMediaDocument(media=file["file_id"], caption=response if len(media_group) == 0 else ""))
-                await bot.send_media_group(chat_id=message.chat.id, media=media_group)
-            else:
-                await message.answer(response)
 
 # Клавиатура для отмены
 cancel_keyboard = InlineKeyboardMarkup(inline_keyboard=[
     [InlineKeyboardButton(text="🚫 Отмена", callback_data="cancel")]
 ])
+
+
 
 # Функция смены статуса записи домашнего задания
 @dp.message(F.text == "Изменить статус задания")
@@ -575,7 +686,6 @@ async def choose_subject_for_status_change(message: types.Message, state: FSMCon
 
     await state.update_data(subject=subject, subject_tasks=subject_tasks)
 
-    # Создаем кнопки с текстом задания
     task_buttons = [[KeyboardButton(text=task["task"])] for task in subject_tasks]
    
 
@@ -596,7 +706,7 @@ async def change_homework_status(message: types.Message, state: FSMContext):
         await message.answer("Ошибка: задание не найдено. Выберите из списка.")
         return
 
-    # Сохраняем индекс выбранной задачи в состоянии
+
     await state.update_data(selected_task=selected_task)
 
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
@@ -625,13 +735,13 @@ async def process_status_change(callback_query: types.CallbackQuery, state: FSMC
         await callback_query.answer()
         return
 
-    # Обновляем статус задачи
+
     if callback_query.data == "status_done":
         selected_task["status"] = "Выполнено ✅"
     elif callback_query.data == "status_not_done":
         selected_task["status"] = "Не выполнено ❌"
     elif callback_query.data == "status_delete":
-        # Удаляем задание
+
         homework = load_homework(user_id)
         homework = [task for task in homework if task != selected_task]  # Удаляем задачу
         save_homework(user_id, homework)
@@ -639,16 +749,14 @@ async def process_status_change(callback_query: types.CallbackQuery, state: FSMC
         await state.clear()
         return
 
-    # Обновляем список заданий с новым статусом
     homework = load_homework(user_id)
 
-    # Ищем нужную задачу и обновляем ее статус
     for task in homework:
         if task["task"] == selected_task["task"]:  # Сравниваем по имени задания
             task["status"] = selected_task["status"]  # Обновляем статус
             break  # Останавливаемся на первой найденной задаче
 
-    # Сохраняем обновленные задания
+
     save_homework(user_id, homework)
 
     await state.clear()
@@ -657,6 +765,7 @@ async def process_status_change(callback_query: types.CallbackQuery, state: FSMC
 
 
 USER_HOMEWORK_DIR = "homework_data/"
+
 
 # Функция загрузки домашнего задания для конкретного пользователя
 def load_homework(user_id):
@@ -732,7 +841,7 @@ async def send_deadline_reminders():
 
                     if now.hour == hour and now.minute == minute:
                         logger.info(f"Проверка уведомлений для пользователя {user_id} в {now.strftime('%H:%M')}")
-                        # Проверяем, не отправляли ли уже сегодня уведомление этому пользователю
+
                         if user_id in sent_deadline_notifications:
                             logger.info(f"Уведомление уже отправлено пользователю {user_id} сегодня")
                             continue  # Если уже отправлено, пропускаем
@@ -772,11 +881,12 @@ async def send_deadline_reminders():
                             except ValueError as e:
                                 logging.error(f"Ошибка при разборе даты дедлайна для пользователя {user_id}: {e}")
 
-        # Если уже наступил новый день – сбрасываем список отправленных уведомлений
         if now.hour == 0 and now.minute == 0:
             sent_deadline_notifications.clear()
 
         await asyncio.sleep(10)
+
+
 
 
 @dp.message(F.text == "Настройка уведомлений")
@@ -862,6 +972,7 @@ async def process_new_deadline_time(message: types.Message, state: FSMContext):
         await state.clear()  # Очищаем состояние
     except ValueError:
         await message.answer("Неверный формат времени. Пожалуйста, введите время в формате ЧЧ:ММ.")
+
 
 # Запуск фоновой задачи для отправки оповещений о дедлайнах
 async def main():
